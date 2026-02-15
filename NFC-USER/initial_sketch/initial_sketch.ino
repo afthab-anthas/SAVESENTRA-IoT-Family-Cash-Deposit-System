@@ -8,9 +8,20 @@ GND        GND
 3.3V       3.3V
 */
 
+#define BLYNK_TEMPLATE_ID "TMPL2BRlMcCny"
+#define BLYNK_TEMPLATE_NAME "RFID Access System"
+#define BLYNK_AUTH_TOKEN "z1_KMsJq3kzSu1xmg3dWCBQS33S5dscX"
+
+char ssid[] = "Anthas Home";
+char pass[] = "althaf1109";
+
+
 #include <SPI.h>
 #include <MFRC522.h>
 #include <Preferences.h>
+#include <WiFi.h>
+#include <BlynkSimpleEsp32.h>
+
 
 #define SS_PIN 10
 #define RST_PIN 9
@@ -53,8 +64,29 @@ void saveUsers() {
   preferences.end();
 }
 
+BLYNK_WRITE(V0) {
+  String inputName = param.asString();
+  inputName.trim();
+
+  if (inputName.length() == 0) {
+    Blynk.virtualWrite(V2, "Error: Name cannot be empty.");
+    return;
+  }
+
+  if (userCount >= MAX_USERS) {
+    Blynk.virtualWrite(V2, "Error: User limit reached.");
+    return;
+  }
+
+  pendingName = inputName;
+  registrationMode = true;
+
+  Blynk.virtualWrite(V2, "Registration Mode Active. Scan card for: " + pendingName);
+}
+
 void setup() {
   Serial.begin(115200);
+  Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
   while (!Serial);
 
   SPI.begin();
@@ -67,6 +99,7 @@ void setup() {
 }
 
 void loop() {
+  Blynk.run();
   // 1. Handle Serial Commands
   if (Serial.available()) {
     String input = Serial.readStringUntil('\n');
@@ -116,7 +149,10 @@ void loop() {
     userCount++;
     saveUsers();
 
-    Serial.println("SUCCESS: " + pendingName + " registered.");
+    String successMsg = "SUCCESS: " + pendingName + " registered.";
+    Serial.println(successMsg);
+    Blynk.virtualWrite(V1, successMsg);
+    Blynk.virtualWrite(V2, "Registration Complete");
     registrationMode = false;
   } 
   else {
@@ -125,7 +161,9 @@ void loop() {
     for (int i = 0; i < userCount; i++) {
       if (users[i].uid == uidString) {
         Serial.println("--------------------------");
-        Serial.println("User Recognized: " + users[i].name);
+        String logMsg = "Access Granted: " + users[i].name;
+        Serial.println(logMsg);
+        Blynk.virtualWrite(V1, logMsg);
         Serial.println("UID: " + uidString);
         Serial.println("--------------------------");
         found = true;
@@ -134,7 +172,9 @@ void loop() {
     }
 
     if (!found) {
-      Serial.println("Unknown Card. UID: " + uidString);
+      String unknownMsg = "Access Denied. UID: " + uidString;
+      Serial.println(unknownMsg);
+      Blynk.virtualWrite(V1, unknownMsg);
     }
   }
 
