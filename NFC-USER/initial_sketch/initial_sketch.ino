@@ -1,27 +1,27 @@
 /* RC522      Nano ESP32
-SDA(SS)    D10
-SCK        D13
-MOSI       D11
-MISO       D12
-RST        D9
-GND        GND
-3.3V       3.3V
+   SDA(SS)    D10
+   SCK        D13
+   MOSI       D11
+   MISO       D12
+   RST        D9
+   GND        GND
+   3.3V       3.3V
 */
 
 #define BLYNK_TEMPLATE_ID "TMPL2BRlMcCny"
 #define BLYNK_TEMPLATE_NAME "RFID Access System"
 #define BLYNK_AUTH_TOKEN "z1_KMsJq3kzSu1xmg3dWCBQS33S5dscX"
+#define BLYNK_PRINT Serial
 
-char ssid[] = "Anthas Home";
-char pass[] = "althaf1109";
-
-
+#include <WiFi.h>
+#include <WiFiClient.h>
+#include <BlynkSimpleEsp32.h>
 #include <SPI.h>
 #include <MFRC522.h>
 #include <Preferences.h>
-#include <WiFi.h>
-#include <BlynkSimpleEsp32.h>
 
+char ssid[] = "Anthas Home";
+char pass[] = "althaf1109";
 
 #define SS_PIN 10
 #define RST_PIN 9
@@ -41,8 +41,10 @@ int userCount = 0;
 bool registrationMode = false;
 String pendingName = "";
 
+// --- Memory Functions ---
+
 void loadUsers() {
-  preferences.begin("users", true);
+  preferences.begin("users", true); // Open in read-only mode initially
   userCount = preferences.getInt("count", 0);
   for (int i = 0; i < userCount; i++) {
     users[i].name = preferences.getString(("name" + String(i)).c_str(), "");
@@ -51,75 +53,87 @@ void loadUsers() {
   preferences.end();
   Serial.print("Loaded ");
   Serial.print(userCount);
-  Serial.println(" users from flash.");
+  Serial.println(" users.");
 }
 
 void saveUsers() {
-  preferences.begin("users", false);
+  preferences.begin("users", false); // Open in read/write mode
   preferences.putInt("count", userCount);
-  // We save the last added user specifically to be efficient
+  // Save only the latest user added to be efficient
   int i = userCount - 1; 
   preferences.putString(("name" + String(i)).c_str(), users[i].name);
   preferences.putString(("uid" + String(i)).c_str(), users[i].uid);
   preferences.end();
 }
 
+// Function to wipe all data
+void clearAllUsers() {
+  Serial.println("Wiping Database...");
+  preferences.begin("users", false);
+  preferences.clear(); // Nuke all data in this namespace
+  preferences.end();
+  
+  // Clear RAM data immediately
+  userCount = 0;
+  for(int i=0; i<MAX_USERS; i++) {
+    users[i].name = "";
+    users[i].uid = "";
+  }
+  
+  Serial.println("System Reset: All users deleted.");
+  Blynk.virtualWrite(V1, "System Reset: All Users Deleted");
+}
+
+// --- Blynk Handlers ---
+
+// V0: Input for Registration Name
 BLYNK_WRITE(V0) {
-  String inputName = param.asString();
+  String inputName = param.asStr();
   inputName.trim();
 
-  if (inputName.length() == 0) {
-    Blynk.virtualWrite(V2, "Error: Name cannot be empty.");
-    return;
-  }
+  if (inputName.length() == 0) return;
 
   if (userCount >= MAX_USERS) {
-    Blynk.virtualWrite(V2, "Error: User limit reached.");
+    Blynk.virtualWrite(V1, "Error: Memory Full");
     return;
   }
 
   pendingName = inputName;
   registrationMode = true;
 
-  Blynk.virtualWrite(V2, "Registration Mode Active. Scan card for: " + pendingName);
+  // Feedback to App
+  Blynk.virtualWrite(V1, "Tap card to register " + pendingName + "...");
+  Serial.println("Registration Mode: Waiting for card for " + pendingName);
 }
+
+// V3: Button to Reset All Users
+BLYNK_WRITE(V3) {
+  if (param.asInt() == 1) { // If button is pressed
+    clearAllUsers();
+  }
+}
+
+// --- Main Setup & Loop ---
 
 void setup() {
   Serial.begin(115200);
+  
+  // Connect to Blynk
   Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
-  while (!Serial);
-
+  
   SPI.begin();
   mfrc522.PCD_Init();
 
   loadUsers();
 
-  Serial.println("--- RFID Access System ---");
-  Serial.println("Scan a card to identify, or type 'register NAME' to add new.");
+  Serial.println("--- System Ready ---");
+  Blynk.virtualWrite(V1, "System Ready");
 }
 
 void loop() {
   Blynk.run();
-  // 1. Handle Serial Commands
-  if (Serial.available()) {
-    String input = Serial.readStringUntil('\n');
-    input.trim();
 
-    if (input.startsWith("register ")) {
-      pendingName = input.substring(9);
-      pendingName.trim();
-
-      if (userCount >= MAX_USERS) {
-        Serial.println("Error: User limit reached.");
-      } else {
-        registrationMode = true;
-        Serial.print("Registration Mode Active. Scan card for: ");
-        Serial.println(pendingName);
-      }
-    }
-  }
-
-  // 2. Check for RFID Card
+  // 1. Check for RFID Card
   if (!mfrc522.PICC_IsNewCardPresent()) return;
   if (!mfrc522.PICC_ReadCardSerial()) return;
 
@@ -131,54 +145,62 @@ void loop() {
   }
   uidString.toUpperCase();
 
-  // 3. Logic: Register or Identify?
+  // 2. Logic
   if (registrationMode) {
-    // Check if already exists
+    // --- REGISTRATION LOGIC ---
+    
+    // Check if card is already taken
     for (int i = 0; i < userCount; i++) {
       if (users[i].uid == uidString) {
-        Serial.println("Access Denied: Card already registered to " + users[i].name);
+        String errorMsg = "Card already owned by " + users[i].name;
+        Blynk.virtualWrite(V1, errorMsg);
         registrationMode = false;
         mfrc522.PICC_HaltA();
         return;
       }
     }
 
-    // Save new user
+    // Save New User
     users[userCount].name = pendingName;
     users[userCount].uid = uidString;
     userCount++;
     saveUsers();
 
-    String successMsg = "SUCCESS: " + pendingName + " registered.";
+    // App Feedback: "User 'Name' Registered"
+    String successMsg = "User '" + pendingName + "' Registered";
     Serial.println(successMsg);
     Blynk.virtualWrite(V1, successMsg);
-    Blynk.virtualWrite(V2, "Registration Complete");
+
+    // *** FIX: Clear the Input Box on App ***
+    Blynk.virtualWrite(V0, ""); 
+    
+    // Reset mode
     registrationMode = false;
+    pendingName = ""; // Clear the name buffer
   } 
   else {
-    // IDENTIFICATION MODE
+    // --- IDENTIFICATION LOGIC ---
+    
     bool found = false;
     for (int i = 0; i < userCount; i++) {
       if (users[i].uid == uidString) {
-        Serial.println("--------------------------");
-        String logMsg = "Access Granted: " + users[i].name;
-        Serial.println(logMsg);
-        Blynk.virtualWrite(V1, logMsg);
-        Serial.println("UID: " + uidString);
-        Serial.println("--------------------------");
+        // App Feedback: "Welcome Name"
+        String welcomeMsg = "Welcome " + users[i].name;
+        Serial.println(welcomeMsg);
+        Blynk.virtualWrite(V1, welcomeMsg);
         found = true;
         break;
       }
     }
 
     if (!found) {
-      String unknownMsg = "Access Denied. UID: " + uidString;
-      Serial.println(unknownMsg);
-      Blynk.virtualWrite(V1, unknownMsg);
+      // App Feedback: "User Not Recognized"
+      Serial.println("Unknown Card: " + uidString);
+      Blynk.virtualWrite(V1, "User Not Recognized");
     }
   }
 
-  // Halt PICC and stop encryption on PCD
+  // Halt PICC
   mfrc522.PICC_HaltA();
   mfrc522.PCD_StopCrypto1();
 }
