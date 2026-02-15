@@ -1,24 +1,23 @@
-/* 
-RC522	    Nano ESP32
-SDA(SS)	  D10
-SCK	      D13
-MOSI	    D11
-MISO	    D12
-RST	      D9
-GND	      GND
-3.3V	    3.3V
+/* RC522      Nano ESP32
+SDA(SS)    D10
+SCK        D13
+MOSI       D11
+MISO       D12
+RST        D9
+GND        GND
+3.3V       3.3V
 */
-
-
 
 #include <SPI.h>
 #include <MFRC522.h>
+#include <Preferences.h>
 
 #define SS_PIN 10
 #define RST_PIN 9
 #define MAX_USERS 20
 
 MFRC522 mfrc522(SS_PIN, RST_PIN);
+Preferences preferences;
 
 struct User {
   String name;
@@ -31,6 +30,29 @@ int userCount = 0;
 bool registrationMode = false;
 String pendingName = "";
 
+void loadUsers() {
+  preferences.begin("users", true);
+  userCount = preferences.getInt("count", 0);
+  for (int i = 0; i < userCount; i++) {
+    users[i].name = preferences.getString(("name" + String(i)).c_str(), "");
+    users[i].uid = preferences.getString(("uid" + String(i)).c_str(), "");
+  }
+  preferences.end();
+  Serial.print("Loaded ");
+  Serial.print(userCount);
+  Serial.println(" users from flash.");
+}
+
+void saveUsers() {
+  preferences.begin("users", false);
+  preferences.putInt("count", userCount);
+  // We save the last added user specifically to be efficient
+  int i = userCount - 1; 
+  preferences.putString(("name" + String(i)).c_str(), users[i].name);
+  preferences.putString(("uid" + String(i)).c_str(), users[i].uid);
+  preferences.end();
+}
+
 void setup() {
   Serial.begin(115200);
   while (!Serial);
@@ -38,13 +60,14 @@ void setup() {
   SPI.begin();
   mfrc522.PCD_Init();
 
-  Serial.println("System Ready.");
-  Serial.println("Type: register NAME");
+  loadUsers();
+
+  Serial.println("--- RFID Access System ---");
+  Serial.println("Scan a card to identify, or type 'register NAME' to add new.");
 }
 
 void loop() {
-
-  // Handle Serial Commands
+  // 1. Handle Serial Commands
   if (Serial.available()) {
     String input = Serial.readStringUntil('\n');
     input.trim();
@@ -54,53 +77,68 @@ void loop() {
       pendingName.trim();
 
       if (userCount >= MAX_USERS) {
-        Serial.println("User limit reached.");
-        return;
+        Serial.println("Error: User limit reached.");
+      } else {
+        registrationMode = true;
+        Serial.print("Registration Mode Active. Scan card for: ");
+        Serial.println(pendingName);
       }
-
-      registrationMode = true;
-      Serial.println("Waiting for card...");
     }
   }
 
-  // NFC Logic
+  // 2. Check for RFID Card
+  if (!mfrc522.PICC_IsNewCardPresent()) return;
+  if (!mfrc522.PICC_ReadCardSerial()) return;
+
+  // Convert UID to String
+  String uidString = "";
+  for (byte i = 0; i < mfrc522.uid.size; i++) {
+    if (mfrc522.uid.uidByte[i] < 0x10) uidString += "0";
+    uidString += String(mfrc522.uid.uidByte[i], HEX);
+  }
+  uidString.toUpperCase();
+
+  // 3. Logic: Register or Identify?
   if (registrationMode) {
-
-    if (!mfrc522.PICC_IsNewCardPresent()) return;
-    if (!mfrc522.PICC_ReadCardSerial()) return;
-
-    String uidString = "";
-
-    for (byte i = 0; i < mfrc522.uid.size; i++) {
-      if (mfrc522.uid.uidByte[i] < 0x10) {
-        uidString += "0";
-      }
-      uidString += String(mfrc522.uid.uidByte[i], HEX);
-    }
-
-    uidString.toUpperCase();
-
-    // Check duplicate
+    // Check if already exists
     for (int i = 0; i < userCount; i++) {
       if (users[i].uid == uidString) {
-        Serial.println("Card already registered.");
+        Serial.println("Access Denied: Card already registered to " + users[i].name);
         registrationMode = false;
         mfrc522.PICC_HaltA();
         return;
       }
     }
 
-    // Save user
+    // Save new user
     users[userCount].name = pendingName;
     users[userCount].uid = uidString;
     userCount++;
+    saveUsers();
 
-    Serial.print("User ");
-    Serial.print(pendingName);
-    Serial.print(" registered with UID ");
-    Serial.println(uidString);
-
+    Serial.println("SUCCESS: " + pendingName + " registered.");
     registrationMode = false;
-    mfrc522.PICC_HaltA();
+  } 
+  else {
+    // IDENTIFICATION MODE
+    bool found = false;
+    for (int i = 0; i < userCount; i++) {
+      if (users[i].uid == uidString) {
+        Serial.println("--------------------------");
+        Serial.println("User Recognized: " + users[i].name);
+        Serial.println("UID: " + uidString);
+        Serial.println("--------------------------");
+        found = true;
+        break;
+      }
+    }
+
+    if (!found) {
+      Serial.println("Unknown Card. UID: " + uidString);
+    }
   }
+
+  // Halt PICC and stop encryption on PCD
+  mfrc522.PICC_HaltA();
+  mfrc522.PCD_StopCrypto1();
 }
