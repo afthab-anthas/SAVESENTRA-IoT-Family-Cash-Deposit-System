@@ -16,43 +16,91 @@ GND	      GND
 
 #define SS_PIN 10
 #define RST_PIN 9
+#define MAX_USERS 20
 
 MFRC522 mfrc522(SS_PIN, RST_PIN);
+
+struct User {
+  String name;
+  String uid;
+};
+
+User users[MAX_USERS];
+int userCount = 0;
+
+bool registrationMode = false;
+String pendingName = "";
 
 void setup() {
   Serial.begin(115200);
   while (!Serial);
 
-  SPI.begin();  // Uses hardware SPI pins (D11, D12, D13)
+  SPI.begin();
   mfrc522.PCD_Init();
 
-  Serial.println("Nano ESP32 NFC Ready. Tap card...");
+  Serial.println("System Ready.");
+  Serial.println("Type: register NAME");
 }
 
 void loop() {
 
-  if (!mfrc522.PICC_IsNewCardPresent()) {
-    return;
-  }
+  // Handle Serial Commands
+  if (Serial.available()) {
+    String input = Serial.readStringUntil('\n');
+    input.trim();
 
-  if (!mfrc522.PICC_ReadCardSerial()) {
-    return;
-  }
+    if (input.startsWith("register ")) {
+      pendingName = input.substring(9);
+      pendingName.trim();
 
-  Serial.print("UID: ");
+      if (userCount >= MAX_USERS) {
+        Serial.println("User limit reached.");
+        return;
+      }
 
-  String uidString = "";
-
-  for (byte i = 0; i < mfrc522.uid.size; i++) {
-    if (mfrc522.uid.uidByte[i] < 0x10) {
-      uidString += "0";
+      registrationMode = true;
+      Serial.println("Waiting for card...");
     }
-    uidString += String(mfrc522.uid.uidByte[i], HEX);
   }
 
-  uidString.toUpperCase();
+  // NFC Logic
+  if (registrationMode) {
 
-  Serial.println(uidString);
+    if (!mfrc522.PICC_IsNewCardPresent()) return;
+    if (!mfrc522.PICC_ReadCardSerial()) return;
 
-  mfrc522.PICC_HaltA();
+    String uidString = "";
+
+    for (byte i = 0; i < mfrc522.uid.size; i++) {
+      if (mfrc522.uid.uidByte[i] < 0x10) {
+        uidString += "0";
+      }
+      uidString += String(mfrc522.uid.uidByte[i], HEX);
+    }
+
+    uidString.toUpperCase();
+
+    // Check duplicate
+    for (int i = 0; i < userCount; i++) {
+      if (users[i].uid == uidString) {
+        Serial.println("Card already registered.");
+        registrationMode = false;
+        mfrc522.PICC_HaltA();
+        return;
+      }
+    }
+
+    // Save user
+    users[userCount].name = pendingName;
+    users[userCount].uid = uidString;
+    userCount++;
+
+    Serial.print("User ");
+    Serial.print(pendingName);
+    Serial.print(" registered with UID ");
+    Serial.println(uidString);
+
+    registrationMode = false;
+    mfrc522.PICC_HaltA();
+  }
 }
