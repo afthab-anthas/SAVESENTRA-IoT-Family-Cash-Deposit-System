@@ -7,9 +7,10 @@
    GND        GND
    3.3V       3.3V
 
-  TCRT5000 DO → D4
-  VCC → 3.3V
-  GND → GND
+   TCRT5000    Nano ESP32
+   DO          D4
+   VCC         3.3V
+   GND         GND
 */
 
 #define BLYNK_TEMPLATE_ID "TMPL2BRlMcCny"
