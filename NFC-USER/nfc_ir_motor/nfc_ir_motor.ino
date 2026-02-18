@@ -157,7 +157,7 @@ void setup() {
   digitalWrite(LED_BUILTIN, LOW);
 
   // Motor Speed (RPM)
-  myStepper.setSpeed(15); // 10-15 RPM is safe for 5V
+  myStepper.setSpeed(10); // 10-15 RPM is safe for 5V
 
   // Connect to Blynk
   Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
