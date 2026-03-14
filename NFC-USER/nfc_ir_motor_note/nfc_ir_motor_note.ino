@@ -19,11 +19,12 @@
    IN4         D8
 */
 
-#define BLYNK_TEMPLATE_ID "TMPL2BRlMcCny"
-#define BLYNK_TEMPLATE_NAME "RFID Access System"
-#define BLYNK_AUTH_TOKEN "z1_KMsJq3kzSu1xmg3dWCBQS33S5dscX"
+#define BLYNK_TEMPLATE_ID "TMPL2sUhFh8RM"
+#define BLYNK_TEMPLATE_NAME "SAVESENTRA"
+#define BLYNK_AUTH_TOKEN "jIf-JTtFAMlw41WrJvqtZalG0-WnrBXG"
 #define BLYNK_PRINT Serial
 #define IR_SENSOR_PIN 4
+#define BUZZER_PIN 3 // Active Buzzer connected to D3
 
 // --- Stepper Motor Pins ---
 #define IN1 5
@@ -38,10 +39,15 @@
 #include <MFRC522.h>
 #include <Preferences.h>
 #include <Stepper.h>
-#include <time.h> // For NTP Clound Logging
+#include <HTTPClient.h>
+#include <time.h> // For NTP Cloud Logging
 
 char ssid[] = "Anthas Home";
 char pass[] = "althaf1109";
+
+// --- Raspberry Pi ML Server ---
+const char* rpiServer = "http://raspberrypi.local:5000/deposit";
+bool nextNoteIs10 = true; // Alternates 10 -> 5 -> 10 -> 5
 bool authenticated = false;
 int authenticatedUserIndex = -1; // Keep track of WHO is logged in
 unsigned long authStartTime = 0;
@@ -64,14 +70,16 @@ Stepper myStepper(stepsPerRevolution, IN1, IN3, IN2, IN4);
 
 // --- Motor Logic Variables ---
 unsigned long lastIrBlockTime = 0;
-const unsigned long motorStopDelay = 2000; // 2 seconds hysteresis
+const unsigned long motorStopDelay = 5000; // 5 seconds hysteresis
 bool isMotorRunning = false;
 bool depositInProgress = false;
+long currentDepositSteps = 0; // Track Steps
+long billLengthSteps = 0; // Track actual bill length
 
 struct User {
   String name;
   String uid;
-  float balance; // [NEW] Track money
+  float balance; // Track money
 };
 
 User users[MAX_USERS];
@@ -79,6 +87,17 @@ int userCount = 0;
 
 bool registrationMode = false;
 String pendingName = "";
+
+// --- Buzzer Helper ---
+// Helper to beep N times. A delay of 150ms makes an assertive beep.
+void beepBuzzer(int times) {
+  for (int i = 0; i < times; i++) {
+    digitalWrite(BUZZER_PIN, HIGH);
+    delay(150);
+    digitalWrite(BUZZER_PIN, LOW);
+    if (i < times - 1) delay(100);
+  }
+}
 
 // --- Memory Functions ---
 
@@ -131,6 +150,7 @@ void clearAllUsers() {
   
   Serial.println("System Reset: All users deleted.");
   Blynk.virtualWrite(V1, "System Reset: All Users Deleted");
+  updateBlynkUserList(); // Clear the menu
 }
 
 String getTimestamp() {
@@ -139,10 +159,28 @@ String getTimestamp() {
     return "00:00:00";
   }
   char timeStringBuff[50]; //50 chars should be enough
-  strftime(timeStringBuff, sizeof(timeStringBuff), "%b %d %H:%M:%S", &timeinfo);
+  strftime(timeStringBuff, sizeof(timeStringBuff), "%Y-%m-%d %H:%M:%S", &timeinfo);
   return String(timeStringBuff);
 }
 
+
+void updateBlynkUserList() {
+    if (userCount == 0) {
+        Blynk.setProperty(V20, "labels", "No Users Registered");
+        return;
+    }
+
+    // Blynk 2.0 Menu: pass individual items for reliable updates
+    Blynk.setProperty(V20, "labels", 
+        (userCount > 0 ? users[0].name : ""), 
+        (userCount > 1 ? users[1].name : ""), 
+        (userCount > 2 ? users[2].name : ""), 
+        (userCount > 3 ? users[3].name : ""),
+        (userCount > 4 ? users[4].name : "")
+    );
+    
+    Serial.println("Blynk User List Refreshed with individual items.");
+}
 
 // --- Blynk Handlers ---
 
@@ -163,6 +201,9 @@ BLYNK_WRITE(V0) {
 
   Blynk.virtualWrite(V1, "Tap card to register " + pendingName + "...");
   Serial.println("Registration Mode: Waiting for card for " + pendingName);
+  
+  // 1 Beep: Ready to tap for registration
+  beepBuzzer(1);
 }
 
 // V3: Button to Reset All Users
@@ -170,14 +211,30 @@ BLYNK_WRITE(V3) {
   if (param.asInt() == 1) clearAllUsers();
 }
 
+// V20: Menu Dropdown - View selected user's balance
+BLYNK_WRITE(V20) {
+  int selectedIndex = param.asInt();
+  
+  if (selectedIndex >= 0 && selectedIndex < userCount) {
+    Blynk.virtualWrite(V6, users[selectedIndex].balance);
+    Blynk.virtualWrite(V1, "Profile: " + users[selectedIndex].name);
+    Serial.println("App selected: " + users[selectedIndex].name);
+  }
+}
+
 // --- Main Setup & Loop ---
 
 void setup() {
   Serial.begin(115200);
   delay(1000); 
-  Serial.println("\n\n--- Booting SaveSentra (Cloud Version) ---");
+  Serial.println("\n\n--- Booting SaveSentra (Motor Note Version) ---");
 
   pinMode(IR_SENSOR_PIN, INPUT);
+  
+  // Initialize Buzzer
+  pinMode(BUZZER_PIN, OUTPUT);
+  digitalWrite(BUZZER_PIN, LOW);
+  
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
 
@@ -202,6 +259,7 @@ void setup() {
 
   Serial.println("--- System Ready ---");
   Blynk.virtualWrite(V1, "System Ready");
+  updateBlynkUserList(); // Populate menu on boot
 }
 
 void loop() {
@@ -239,6 +297,10 @@ void loop() {
         Blynk.virtualWrite(V0, ""); 
         registrationMode = false;
         pendingName = "";
+        updateBlynkUserList(); // Update menu after new registration
+        
+        // 2 Beeps: Registration Confirmation
+        beepBuzzer(2);
     } 
     else {
         // --- Auth Logic ---
@@ -253,9 +315,28 @@ void loop() {
             Blynk.virtualWrite(V1, welcomeMsg);
             Blynk.virtualWrite(V6, users[i].balance); 
 
+            // Update Total Family Savings on V10
+            float totalSavings = 0;
+            for (int j = 0; j < userCount; j++) totalSavings += users[j].balance;
+            Blynk.virtualWrite(V10, totalSavings);
+
             authenticated = true;
             depositInProgress = false; 
             authStartTime = millis();
+            
+            // --- NEW: Start motor immediately on Auth ---
+            isMotorRunning = true;
+            lastIrBlockTime = millis(); 
+            // ------------------------------------------
+            
+            // Reset steps for new session
+            currentDepositSteps = 0;
+            billLengthSteps = 0;
+            Blynk.virtualWrite(V4, "0 Steps");
+
+            // 1 Beep: Successfully Authenticated
+            beepBuzzer(1);
+
             found = true;
             break;
         }
@@ -264,6 +345,9 @@ void loop() {
         if (!found) {
         Serial.println("Unknown Card: " + uidString);
         Blynk.virtualWrite(V1, "User Not Recognized");
+        
+        // 2 Beeps: Unknown Card / Not Authenticated
+        beepBuzzer(2);
         }
     }
 
@@ -285,7 +369,7 @@ void loop() {
         depositInProgress = true; 
         
         digitalWrite(LED_BUILTIN, HIGH); 
-        Blynk.virtualWrite(V4, "Intake Active");
+        // V4 update is handled in the step logic so we can see steps
     } 
     else {
         digitalWrite(LED_BUILTIN, LOW);
@@ -296,13 +380,14 @@ void loop() {
             isMotorRunning = true;
         } else {
             isMotorRunning = false;
-            Blynk.virtualWrite(V4, "Waiting...");
+            // Removed "Waiting..." assignment to V4 to keep steps visible
         }
 
         // 2. Deposit Processing & Auto-Logout
         if (depositInProgress && timeSinceClear > (motorStopDelay + 3000)) {
-             // DEPOSIT LOGIC
-             float depositAmount = 10.0; // Hardcoded requirement
+             // DEPOSIT LOGIC — alternates 10 AED and 5 AED
+             float depositAmount = nextNoteIs10 ? 10.0 : 5.0;
+             nextNoteIs10 = !nextNoteIs10; // Flip for next deposit
              users[authenticatedUserIndex].balance += depositAmount; // Add to struct
              
              // Save to memory
@@ -310,20 +395,45 @@ void loop() {
 
              // Cloud Logging
              String timestamp = getTimestamp();
-             String logMessage = timestamp + " | " + users[authenticatedUserIndex].name + " deposited " + String(depositAmount, 2) + " AED. Total: " + String(users[authenticatedUserIndex].balance, 2) + " AED";
+             String logMessage = timestamp + " | " + users[authenticatedUserIndex].name + " deposited " + String(depositAmount, 2) + " AED. Total: " + String(users[authenticatedUserIndex].balance, 2) + " AED. Length Steps: " + String(billLengthSteps);
              Serial.println(logMessage);
              
              Blynk.virtualWrite(V5, logMessage); // Terminal/Log string pin
              Blynk.virtualWrite(V6, users[authenticatedUserIndex].balance); // Update balance display
 
+             // Update Total Family Savings on V10
+             float totalSavings = 0;
+             for (int j = 0; j < userCount; j++) totalSavings += users[j].balance;
+             Blynk.virtualWrite(V10, totalSavings);
+
+             // --- Send deposit data to Raspberry Pi for ML ---
+             HTTPClient http;
+             http.begin(rpiServer);
+             http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+             String csvPayload = "uid=" + users[authenticatedUserIndex].uid
+                               + "&name=" + users[authenticatedUserIndex].name
+                               + "&amount=" + String(depositAmount, 0)
+                               + "&balance=" + String(users[authenticatedUserIndex].balance, 0);
+             int httpCode = http.POST(csvPayload);
+             if (httpCode > 0) {
+                 Serial.println("RPi updated successfully");
+             } else {
+                 Serial.println("RPi update failed: " + String(httpCode));
+             }
+             http.end();
+
              // Logout Sequence
              Serial.println("Auto-Logout: Processing Complete");
              Blynk.virtualWrite(V1, "Session Ended");
+             
+             // 3 Beeps: Deposit sequence finished
+             beepBuzzer(3);
              
              authenticated = false;
              depositInProgress = false;
              isMotorRunning = false; 
              authenticatedUserIndex = -1; // Clear tracking
+             
              digitalWrite(LED_BUILTIN, LOW);
         }
     }
@@ -331,6 +441,19 @@ void loop() {
     // --- Execute Step (Non-blocking) ---
     if (isMotorRunning) {
         myStepper.step(10); 
+        currentDepositSteps += 10;
+        
+        // ONLY count steps toward the bill length if the IR sensor is actively blocked
+        if (digitalRead(IR_SENSOR_PIN) == LOW) {
+            billLengthSteps += 10; 
+        }
+        
+        // Update Blynk V4 every 100 steps to prevent flooding the server
+        static long lastReportedSteps = -1;
+        if (currentDepositSteps - lastReportedSteps >= 100) {
+            Blynk.virtualWrite(V4, String(currentDepositSteps) + " Steps");
+            lastReportedSteps = currentDepositSteps;
+        }
     } 
   }
 }
