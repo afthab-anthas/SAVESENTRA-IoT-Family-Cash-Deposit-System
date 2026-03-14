@@ -96,7 +96,6 @@ String pendingName = "";
 void loadUsers() {
   preferences.begin("users", true); 
   userCount = preferences.getInt("count", 0);
-  familyGoal = preferences.getInt("goal", 1000); // Load saved goal
   for (int i = 0; i < userCount; i++) {
     users[i].name = preferences.getString(("name" + String(i)).c_str(), "");
     users[i].uid = preferences.getString(("uid" + String(i)).c_str(), "");
@@ -180,14 +179,6 @@ void updateBlynkUserList() {
 
 // --- Blynk Handlers ---
 
-// V12: Manual Logout Button (Parent Only)
-BLYNK_WRITE(V12) {
-  if (param.asInt() == 1 && authenticated) {
-    Serial.println("Manual logout triggered via V12 button.");
-    performLogout();
-  }
-}
-
 // V0: Input for Registration Name
 BLYNK_WRITE(V0) {
   String inputName = param.asStr();
@@ -229,14 +220,6 @@ BLYNK_WRITE(V20) {
     if (users[selectedIndex].role == "Parent") roleMenuIndex = 1;
     else if (users[selectedIndex].role == "Child") roleMenuIndex = 2;
     Blynk.virtualWrite(V21, roleMenuIndex);
-    
-    // Update V11 contribution % for the selected user
-    if (familyGoal > 0) {
-      float goalPct = (users[selectedIndex].balance / (float)familyGoal) * 100.0;
-      Blynk.virtualWrite(V11, goalPct);
-    } else {
-      Blynk.virtualWrite(V11, 0.0);
-    }
     
     Serial.println("App selected: " + users[selectedIndex].name + " Role: " + users[selectedIndex].role);
   }
@@ -324,11 +307,6 @@ BLYNK_WRITE(V7) {
   familyGoal = param.asInt();
   Serial.print("New Family Savings Goal: ");
   Serial.println(familyGoal);
-
-  // Save the new goal to flash so it survives reboots
-  preferences.begin("users", false);
-  preferences.putInt("goal", familyGoal);
-  preferences.end();
   
   // 1. Update the 'Max' property of the widgets
   Blynk.setProperty(V10, "max", familyGoal); 
@@ -347,44 +325,12 @@ BLYNK_WRITE(V7) {
 
 // --- Helper Functions ---
 void updateContributionStatus() {
-  int indexToCalculate = -1;
-
-  // Prioritize the user currently logged in via NFC
-  if (authenticatedUserIndex != -1) {
-    indexToCalculate = authenticatedUserIndex;
-  } 
-  // Fallback: If an Admin is browsing the V20 menu with no one logged in
-  else if (selectedMenuIndex != -1) {
-    indexToCalculate = selectedMenuIndex;
-  }
-
-  if (indexToCalculate != -1 && familyGoal > 0) {
-    float goalPercentage = (users[indexToCalculate].balance / (float)familyGoal) * 100.0;
+  if (authenticatedUserIndex != -1 && familyGoal > 0) {
+    float goalPercentage = (users[authenticatedUserIndex].balance / (float)familyGoal) * 100.0;
     Blynk.virtualWrite(V11, goalPercentage);
   } else {
     Blynk.virtualWrite(V11, 0.0);
   }
-}
-
-void performLogout() {
-  Serial.println("Logout: Session Ended");
-  Blynk.virtualWrite(V1, "Session Ended");
-  
-  // Hide Admin Tools
-  Blynk.setProperty(V0, "isHidden", true);
-  Blynk.setProperty(V3, "isHidden", true);
-  Blynk.setProperty(V7, "isHidden", true);
-  Blynk.setProperty(V8, "isHidden", true);
-  Blynk.setProperty(V12, "isHidden", true);
-  Blynk.setProperty(V21, "isHidden", true);
-  Blynk.setProperty(V30, "isHidden", true);
-
-  authenticated = false;
-  depositInProgress = false;
-  isMotorRunning = false;
-  authenticatedUserIndex = -1;
-  updateContributionStatus(); // Reset V11 to 0.0
-  digitalWrite(LED_BUILTIN, LOW);
 }
 
 // --- Main Setup & Loop ---
@@ -420,24 +366,41 @@ void setup() {
   Serial.println("--- System Ready ---");
   Blynk.virtualWrite(V1, "System Ready");
   updateBlynkUserList(); // Populate menu on boot
-
-  // Sync Blynk UI with loaded memory state
-  Blynk.virtualWrite(V7, familyGoal);
-  Blynk.setProperty(V10, "max", familyGoal);
-  Blynk.setProperty(V6, "max", familyGoal);
   
   // Hide Admin Widgets on Boot
   Blynk.setProperty(V0, "isHidden", true);
   Blynk.setProperty(V3, "isHidden", true);
   Blynk.setProperty(V7, "isHidden", true);
   Blynk.setProperty(V8, "isHidden", true);
-  Blynk.setProperty(V12, "isHidden", true);
   Blynk.setProperty(V21, "isHidden", true);
   Blynk.setProperty(V30, "isHidden", true);
 }
 
 void loop() {
   Blynk.run();
+
+  // --- QUICK BALANCE OVERRIDE ---
+  if (Serial.available() > 0) {
+    float manualBal = Serial.parseFloat(); // Just type the number and hit enter
+    if (manualBal > 0) {
+      if (authenticatedUserIndex != -1) {
+        users[authenticatedUserIndex].balance = manualBal;
+        saveUserBalance(authenticatedUserIndex); // Writes to ESP32 Flash memory
+        
+        // Sync to Blynk widgets immediately
+        Blynk.virtualWrite(V6, users[authenticatedUserIndex].balance);
+        
+        float total = 0;
+        for (int j = 0; j < userCount; j++) total += users[j].balance;
+        Blynk.virtualWrite(V10, total);
+
+        Serial.println("Updated " + users[authenticatedUserIndex].name + " to: " + String(manualBal));
+        updateContributionStatus();
+      } else {
+        Serial.println("Error: Tap your RFID card first so I know who to edit!");
+      }
+    }
+  }
 
   // 1. Check for RFID Card
   if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
@@ -509,16 +472,15 @@ void loop() {
                 Blynk.setProperty(V3, "isHidden", false);
                 Blynk.setProperty(V7, "isHidden", false);
                 Blynk.setProperty(V8, "isHidden", false);
-                Blynk.setProperty(V12, "isHidden", false);
                 Blynk.setProperty(V21, "isHidden", false);
                 Blynk.setProperty(V30, "isHidden", false);
             } else {
                 Serial.println("Standard user authenticated: Admin Tools hidden");
+                // Ensure they are hidden just in case
                 Blynk.setProperty(V0, "isHidden", true);
                 Blynk.setProperty(V3, "isHidden", true);
                 Blynk.setProperty(V7, "isHidden", true);
                 Blynk.setProperty(V8, "isHidden", true);
-                Blynk.setProperty(V12, "isHidden", true);
                 Blynk.setProperty(V21, "isHidden", true);
                 Blynk.setProperty(V30, "isHidden", true);
             }
@@ -564,7 +526,7 @@ void loop() {
     if (currentIrState == LOW) {
         lastIrBlockTime = millis();
         isMotorRunning = true;
-        depositInProgress = true;
+        depositInProgress = true; 
         
         digitalWrite(LED_BUILTIN, HIGH); 
         // V4 update is handled in the step logic so we can see steps
@@ -578,17 +540,13 @@ void loop() {
             isMotorRunning = true;
         } else {
             isMotorRunning = false;
+            // Removed "Waiting..." assignment to V4 to keep steps visible
         }
 
-        // 2. Deposit Processing 
+        // 2. Deposit Processing & Auto-Logout
         if (depositInProgress && timeSinceClear > (motorStopDelay + 3000)) {
              // DEPOSIT LOGIC — alternates 10 AED and 5 AED
              float depositAmount = nextNoteIs10 ? 10.0 : 5.0;
-
-             // Push Notification via Blynk Events
-             String notifyMsg = users[authenticatedUserIndex].name + " deposited " + String(depositAmount, 0) + " AED";
-             Blynk.logEvent("note_deposited", notifyMsg);
-
              nextNoteIs10 = !nextNoteIs10; // Flip for next deposit
              users[authenticatedUserIndex].balance += depositAmount; // Add to struct
              
@@ -626,7 +584,24 @@ void loop() {
              http.end();
 
              // Logout Sequence
-             performLogout();
+             Serial.println("Auto-Logout: Processing Complete");
+             Blynk.virtualWrite(V1, "Session Ended");
+             
+             // Hide Admin Tools on Logout
+             Blynk.setProperty(V0, "isHidden", true);
+             Blynk.setProperty(V3, "isHidden", true);
+             Blynk.setProperty(V7, "isHidden", true);
+             Blynk.setProperty(V8, "isHidden", true);
+             Blynk.setProperty(V21, "isHidden", true);
+             Blynk.setProperty(V30, "isHidden", true);
+             
+             authenticated = false;
+             depositInProgress = false;
+             isMotorRunning = false; 
+             authenticatedUserIndex = -1; // Clear tracking
+             updateContributionStatus(); // Reset V11 to 0.0
+             
+             digitalWrite(LED_BUILTIN, LOW);
         }
     }
 
