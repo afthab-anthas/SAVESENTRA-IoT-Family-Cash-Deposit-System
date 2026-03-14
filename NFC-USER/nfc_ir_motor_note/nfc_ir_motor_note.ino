@@ -24,7 +24,6 @@
 #define BLYNK_AUTH_TOKEN "jIf-JTtFAMlw41WrJvqtZalG0-WnrBXG"
 #define BLYNK_PRINT Serial
 #define IR_SENSOR_PIN 4
-#define BUZZER_PIN 3 // Active Buzzer connected to D3
 
 // --- Stepper Motor Pins ---
 #define IN1 5
@@ -51,6 +50,7 @@ bool nextNoteIs10 = true; // Alternates 10 -> 5 -> 10 -> 5
 bool authenticated = false;
 int authenticatedUserIndex = -1; // Keep track of WHO is logged in
 unsigned long authStartTime = 0;
+int selectedMenuIndex = -1; // Tracks which user is clicked in the V20 dropdown
 
 // --- NTP Time Setup ---
 const char* ntpServer = "pool.ntp.org";
@@ -76,6 +76,8 @@ bool depositInProgress = false;
 long currentDepositSteps = 0; // Track Steps
 long billLengthSteps = 0; // Track actual bill length
 
+int familyGoal = 1000; // Default goal
+
 struct User {
   String name;
   String uid;
@@ -87,17 +89,6 @@ int userCount = 0;
 
 bool registrationMode = false;
 String pendingName = "";
-
-// --- Buzzer Helper ---
-// Helper to beep N times. A delay of 150ms makes an assertive beep.
-void beepBuzzer(int times) {
-  for (int i = 0; i < times; i++) {
-    digitalWrite(BUZZER_PIN, HIGH);
-    delay(150);
-    digitalWrite(BUZZER_PIN, LOW);
-    if (i < times - 1) delay(100);
-  }
-}
 
 // --- Memory Functions ---
 
@@ -201,9 +192,6 @@ BLYNK_WRITE(V0) {
 
   Blynk.virtualWrite(V1, "Tap card to register " + pendingName + "...");
   Serial.println("Registration Mode: Waiting for card for " + pendingName);
-  
-  // 1 Beep: Ready to tap for registration
-  beepBuzzer(1);
 }
 
 // V3: Button to Reset All Users
@@ -216,9 +204,79 @@ BLYNK_WRITE(V20) {
   int selectedIndex = param.asInt();
   
   if (selectedIndex >= 0 && selectedIndex < userCount) {
+    selectedMenuIndex = selectedIndex; // SAVE globally for V8 to delete
     Blynk.virtualWrite(V6, users[selectedIndex].balance);
     Blynk.virtualWrite(V1, "Profile: " + users[selectedIndex].name);
     Serial.println("App selected: " + users[selectedIndex].name);
+  }
+}
+
+// V8: Delete the specific user currently selected in the V20 Menu
+BLYNK_WRITE(V8) {
+  if (param.asInt() == 1) {
+    int indexToDelete = selectedMenuIndex; // Grab the last selected dropdown index
+
+    if (indexToDelete >= 0 && indexToDelete < userCount) {
+      Serial.println("Deleting User: " + users[indexToDelete].name);
+
+      // 1. Shift all users after this one down by one spot in the array
+      for (int i = indexToDelete; i < userCount - 1; i++) {
+        users[i] = users[i + 1];
+      }
+
+      // 2. Reduce the count
+      userCount--;
+
+      // 3. Completely rewrite the Preferences memory to reflect the new list
+      preferences.begin("users", false);
+      preferences.clear(); // Clear all old entries
+      preferences.putInt("count", userCount);
+      for (int i = 0; i < userCount; i++) {
+        preferences.putString(("name" + String(i)).c_str(), users[i].name);
+        preferences.putString(("uid" + String(i)).c_str(), users[i].uid);
+        preferences.putFloat(("bal" + String(i)).c_str(), users[i].balance);
+      }
+      preferences.end();
+
+      // 4. Update the App UI
+      updateBlynkUserList(); // Refresh the V20 dropdown names
+      Blynk.virtualWrite(V1, "User Deleted Successfully");
+      Blynk.virtualWrite(V6, 0); // Reset balance display
+      
+      // Recalculate and update total family savings
+      float total = 0;
+      for (int j = 0; j < userCount; j++) total += users[j].balance;
+      Blynk.virtualWrite(V10, total);
+      
+      // Fix sync issues if we deleted the person who was currently logged in via RFID
+      if (authenticatedUserIndex == indexToDelete) authenticatedUserIndex = -1;
+      else if (authenticatedUserIndex > indexToDelete) authenticatedUserIndex--; 
+      
+      selectedMenuIndex = -1; // Reset selection
+      Serial.println("User list updated in memory.");
+    } else {
+      Blynk.virtualWrite(V1, "Error: No user selected");
+    }
+  }
+}
+
+// V7: Update Family Savings Goal
+BLYNK_WRITE(V7) {
+  familyGoal = param.asInt();
+  Serial.print("New Family Savings Goal: ");
+  Serial.println(familyGoal);
+  
+  // 1. Update the 'Max' property of the widgets
+  Blynk.setProperty(V10, "max", familyGoal); 
+  Blynk.setProperty(V6, "max", familyGoal);
+
+  // 2. Force the widgets to redraw by re-sending the current values
+  float totalSavings = 0;
+  for (int j = 0; j < userCount; j++) totalSavings += users[j].balance;
+  
+  Blynk.virtualWrite(V10, totalSavings); // Re-send the family total
+  if (authenticatedUserIndex != -1) {
+    Blynk.virtualWrite(V6, users[authenticatedUserIndex].balance); // Re-send personal balance
   }
 }
 
@@ -230,11 +288,6 @@ void setup() {
   Serial.println("\n\n--- Booting SaveSentra (Motor Note Version) ---");
 
   pinMode(IR_SENSOR_PIN, INPUT);
-  
-  // Initialize Buzzer
-  pinMode(BUZZER_PIN, OUTPUT);
-  digitalWrite(BUZZER_PIN, LOW);
-  
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
 
@@ -298,9 +351,6 @@ void loop() {
         registrationMode = false;
         pendingName = "";
         updateBlynkUserList(); // Update menu after new registration
-        
-        // 2 Beeps: Registration Confirmation
-        beepBuzzer(2);
     } 
     else {
         // --- Auth Logic ---
@@ -334,9 +384,6 @@ void loop() {
             billLengthSteps = 0;
             Blynk.virtualWrite(V4, "0 Steps");
 
-            // 1 Beep: Successfully Authenticated
-            beepBuzzer(1);
-
             found = true;
             break;
         }
@@ -345,9 +392,6 @@ void loop() {
         if (!found) {
         Serial.println("Unknown Card: " + uidString);
         Blynk.virtualWrite(V1, "User Not Recognized");
-        
-        // 2 Beeps: Unknown Card / Not Authenticated
-        beepBuzzer(2);
         }
     }
 
@@ -425,9 +469,6 @@ void loop() {
              // Logout Sequence
              Serial.println("Auto-Logout: Processing Complete");
              Blynk.virtualWrite(V1, "Session Ended");
-             
-             // 3 Beeps: Deposit sequence finished
-             beepBuzzer(3);
              
              authenticated = false;
              depositInProgress = false;
