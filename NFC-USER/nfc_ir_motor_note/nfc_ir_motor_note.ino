@@ -82,6 +82,7 @@ struct User {
   String name;
   String uid;
   float balance; // Track money
+  String role;   // User role: "Parent", "Child", "Other"
 };
 
 User users[MAX_USERS];
@@ -99,6 +100,7 @@ void loadUsers() {
     users[i].name = preferences.getString(("name" + String(i)).c_str(), "");
     users[i].uid = preferences.getString(("uid" + String(i)).c_str(), "");
     users[i].balance = preferences.getFloat(("bal" + String(i)).c_str(), 0.0);
+    users[i].role = preferences.getString(("role" + String(i)).c_str(), "Other");
   }
   preferences.end();
   Serial.print("Loaded ");
@@ -115,6 +117,7 @@ void saveUsers() {
   preferences.putString(("name" + String(i)).c_str(), users[i].name);
   preferences.putString(("uid" + String(i)).c_str(), users[i].uid);
   preferences.putFloat(("bal" + String(i)).c_str(), users[i].balance);
+  preferences.putString(("role" + String(i)).c_str(), users[i].role);
   preferences.end();
 }
 
@@ -137,6 +140,7 @@ void clearAllUsers() {
     users[i].name = "";
     users[i].uid = "";
     users[i].balance = 0.0;
+    users[i].role = "";
   }
   
   Serial.println("System Reset: All users deleted.");
@@ -206,8 +210,45 @@ BLYNK_WRITE(V20) {
   if (selectedIndex >= 0 && selectedIndex < userCount) {
     selectedMenuIndex = selectedIndex; // SAVE globally for V8 to delete
     Blynk.virtualWrite(V6, users[selectedIndex].balance);
-    Blynk.virtualWrite(V1, "Profile: " + users[selectedIndex].name);
-    Serial.println("App selected: " + users[selectedIndex].name);
+    
+    // Display the Role alongside the Name
+    String profileStatus = "Profile: " + users[selectedIndex].name + " (" + users[selectedIndex].role + ")";
+    Blynk.virtualWrite(V1, profileStatus);
+    
+    // Auto-update the V21 Role Dropdown to match the user's saved role
+    int roleMenuIndex = 3; // Default to Other
+    if (users[selectedIndex].role == "Parent") roleMenuIndex = 1;
+    else if (users[selectedIndex].role == "Child") roleMenuIndex = 2;
+    Blynk.virtualWrite(V21, roleMenuIndex);
+    
+    Serial.println("App selected: " + users[selectedIndex].name + " Role: " + users[selectedIndex].role);
+  }
+}
+
+// V21: Assign Role to Selected User
+BLYNK_WRITE(V21) {
+  if (selectedMenuIndex >= 0 && selectedMenuIndex < userCount) {
+    int roleSelection = param.asInt(); // 1 = Parent, 2 = Child, 3 = Other
+
+    switch (roleSelection) {
+      case 1: users[selectedMenuIndex].role = "Parent"; break;
+      case 2: users[selectedMenuIndex].role = "Child"; break;
+      case 3: users[selectedMenuIndex].role = "Other"; break;
+      default: return; // Ignore invalid
+    }
+
+    // Save strictly the updated role to memory
+    preferences.begin("users", false);
+    preferences.putString(("role" + String(selectedMenuIndex)).c_str(), users[selectedMenuIndex].role);
+    preferences.end();
+    
+    // Immediately update V1 to show the new role
+    String profileStatus = "Profile: " + users[selectedMenuIndex].name + " (" + users[selectedMenuIndex].role + ")";
+    Blynk.virtualWrite(V1, profileStatus);
+    
+    Serial.println("Role updated to: " + users[selectedMenuIndex].role + " for " + users[selectedMenuIndex].name);
+  } else {
+    Blynk.virtualWrite(V1, "Select a user first!");
   }
 }
 
@@ -235,6 +276,7 @@ BLYNK_WRITE(V8) {
         preferences.putString(("name" + String(i)).c_str(), users[i].name);
         preferences.putString(("uid" + String(i)).c_str(), users[i].uid);
         preferences.putFloat(("bal" + String(i)).c_str(), users[i].balance);
+        preferences.putString(("role" + String(i)).c_str(), users[i].role);
       }
       preferences.end();
 
@@ -278,6 +320,17 @@ BLYNK_WRITE(V7) {
   if (authenticatedUserIndex != -1) {
     Blynk.virtualWrite(V6, users[authenticatedUserIndex].balance); // Re-send personal balance
   }
+  updateContributionStatus();
+}
+
+// --- Helper Functions ---
+void updateContributionStatus() {
+  if (authenticatedUserIndex != -1 && familyGoal > 0) {
+    float goalPercentage = (users[authenticatedUserIndex].balance / (float)familyGoal) * 100.0;
+    Blynk.virtualWrite(V11, goalPercentage);
+  } else {
+    Blynk.virtualWrite(V11, 0.0);
+  }
 }
 
 // --- Main Setup & Loop ---
@@ -313,6 +366,14 @@ void setup() {
   Serial.println("--- System Ready ---");
   Blynk.virtualWrite(V1, "System Ready");
   updateBlynkUserList(); // Populate menu on boot
+  
+  // Hide Admin Widgets on Boot
+  Blynk.setProperty(V0, "isHidden", true);
+  Blynk.setProperty(V3, "isHidden", true);
+  Blynk.setProperty(V7, "isHidden", true);
+  Blynk.setProperty(V8, "isHidden", true);
+  Blynk.setProperty(V21, "isHidden", true);
+  Blynk.setProperty(V30, "isHidden", true);
 }
 
 void loop() {
@@ -341,6 +402,7 @@ void loop() {
         users[userCount].name = pendingName;
         users[userCount].uid = uidString;
         users[userCount].balance = 0.0; // Init balance
+        users[userCount].role = "Other"; // Default role on fast registration
         userCount++;
         saveUsers();
 
@@ -370,6 +432,36 @@ void loop() {
             for (int j = 0; j < userCount; j++) totalSavings += users[j].balance;
             Blynk.virtualWrite(V10, totalSavings);
 
+            // Auto-select user in the V20 Dropdown Menu
+            Blynk.virtualWrite(V20, i); 
+            selectedMenuIndex = i; // Keep our global variable in sync
+            
+            // Auto-update the V21 Role Dropdown to match this user
+            int roleMenuIndex = 3; // Default to Other
+            if (users[i].role == "Parent") roleMenuIndex = 1;
+            else if (users[i].role == "Child") roleMenuIndex = 2;
+            Blynk.virtualWrite(V21, roleMenuIndex);
+
+            // --- ROLE-BASED UI VISIBILITY ---
+            if (users[i].role == "Parent") {
+                Serial.println("Parent authenticated: Enabling Admin Tools");
+                Blynk.setProperty(V0, "isHidden", false);
+                Blynk.setProperty(V3, "isHidden", false);
+                Blynk.setProperty(V7, "isHidden", false);
+                Blynk.setProperty(V8, "isHidden", false);
+                Blynk.setProperty(V21, "isHidden", false);
+                Blynk.setProperty(V30, "isHidden", false);
+            } else {
+                Serial.println("Standard user authenticated: Admin Tools hidden");
+                // Ensure they are hidden just in case
+                Blynk.setProperty(V0, "isHidden", true);
+                Blynk.setProperty(V3, "isHidden", true);
+                Blynk.setProperty(V7, "isHidden", true);
+                Blynk.setProperty(V8, "isHidden", true);
+                Blynk.setProperty(V21, "isHidden", true);
+                Blynk.setProperty(V30, "isHidden", true);
+            }
+
             authenticated = true;
             depositInProgress = false; 
             authStartTime = millis();
@@ -383,6 +475,7 @@ void loop() {
             currentDepositSteps = 0;
             billLengthSteps = 0;
             Blynk.virtualWrite(V4, "0 Steps");
+            updateContributionStatus(); // INIT V11 VALUE
 
             found = true;
             break;
@@ -449,6 +542,7 @@ void loop() {
              float totalSavings = 0;
              for (int j = 0; j < userCount; j++) totalSavings += users[j].balance;
              Blynk.virtualWrite(V10, totalSavings);
+             updateContributionStatus(); // Update V11
 
              // --- Send deposit data to Raspberry Pi for ML ---
              HTTPClient http;
@@ -470,10 +564,19 @@ void loop() {
              Serial.println("Auto-Logout: Processing Complete");
              Blynk.virtualWrite(V1, "Session Ended");
              
+             // Hide Admin Tools on Logout
+             Blynk.setProperty(V0, "isHidden", true);
+             Blynk.setProperty(V3, "isHidden", true);
+             Blynk.setProperty(V7, "isHidden", true);
+             Blynk.setProperty(V8, "isHidden", true);
+             Blynk.setProperty(V21, "isHidden", true);
+             Blynk.setProperty(V30, "isHidden", true);
+             
              authenticated = false;
              depositInProgress = false;
              isMotorRunning = false; 
              authenticatedUserIndex = -1; // Clear tracking
+             updateContributionStatus(); // Reset V11 to 0.0
              
              digitalWrite(LED_BUILTIN, LOW);
         }
