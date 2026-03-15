@@ -5,15 +5,10 @@ from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.svm import SVR
 from sklearn.metrics import mean_absolute_error
 
-print("==========================================")
+
 print("   SAVESENTRA: FULL ML PIPELINE SCRIPT    ")
-print("==========================================")
 
-# =========================================================
-# STEP 1: DATA CLEANING
-# =========================================================
-print("\n--- Starting Data Cleaning ---")
-
+# CLEAN DATA
 # load the raw dataset
 df = pd.read_csv('savings_dataset.csv')
 
@@ -48,10 +43,8 @@ print(f"Total valid transactions left: {len(df)}")
 df.to_csv('savings_dataset_cleaned.csv', index=False)
 
 
-# =========================================================
-# STEP 2: FEATURE ENGINEERING
-# =========================================================
-print("\n--- Feature Engineering ---")
+
+# FEATURE ENGINEERING
 
 # Group by Day
 # We need to know how much was saved per day.
@@ -74,10 +67,9 @@ ml_ready_data = daily_df[selected_columns]
 ml_ready_data.to_csv('ml_ready_data.csv', index=False)
 
 
-# =========================================================
-# STEP 3: MODEL TRAINING AND SHOOTOUT
-# =========================================================
-print("\n--- Starting Model Training ---")
+
+# MODEL TRAINING AND SHOOTOUT
+
 
 # Define Inputs (X) and Target (y) using the data we just engineered
 X = ml_ready_data[['Day_Of_Week', 'Is_Weekend', 'Month', 'Day_Of_Month']]
@@ -94,6 +86,11 @@ models = {
     "SVR": SVR(kernel='rbf')
 }
 
+# Variables to track the best model
+lowest_error = float('inf')
+winning_model_name = ""
+winning_model = None
+
 # Compare Results
 print("\n--- Model Performance Shootout ---")
 for name, model in models.items():
@@ -101,16 +98,19 @@ for name, model in models.items():
     predictions = model.predict(X_test)
     error = mean_absolute_error(y_test, predictions)
     print(f"{name} Error: {error:.2f} AED")
+    
+    if error < lowest_error:
+        lowest_error = error
+        winning_model_name = name
+        winning_model = model
 
+# FINAL GOAL PREDICTION
 
-# =========================================================
-# STEP 4: FINAL GOAL PREDICTION
-# =========================================================
 print("\n--- Running Final Goal Prediction ---")
 
-# We retrain SVR on all the data so it's as smart as possible
-print("Training final SVR model on all data...")
-final_model = SVR(kernel='rbf')
+# We retrain the chosen model on all the data
+print(f"Training final {winning_model_name} model on all data...")
+final_model = winning_model
 final_model.fit(X, y)
 
 # Setup the Simulation
@@ -124,12 +124,12 @@ print(f"Goal: {FAMILY_GOAL} AED")
 simulated_balance = current_balance
 days_ahead = 0
 
-# The Loop: Predicting day by day into the future
+# Predicting day by day into the future
 while simulated_balance < FAMILY_GOAL:
     days_ahead += 1
     future_date = current_date + datetime.timedelta(days=days_ahead)
     
-    # Make the features for tomorrow, next day, etc.
+    # Make the features for tomorrow, next day, etc
     future_features = pd.DataFrame([{
         'Day_Of_Week': future_date.dayofweek,
         'Is_Weekend': 1 if future_date.dayofweek >= 5 else 0,
@@ -143,7 +143,7 @@ while simulated_balance < FAMILY_GOAL:
     if predicted_deposit > 0:
         simulated_balance += predicted_deposit
         
-    # Simple safety break just in case the loop runs forever
+    # Max Days to run for
     if days_ahead > 2000:
         print("Taking too long, simulation stopped.")
         break
