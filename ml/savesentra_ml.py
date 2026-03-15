@@ -150,7 +150,11 @@ while simulated_balance < FAMILY_GOAL:
 
 predicted_goal_date = current_date + datetime.timedelta(days=days_ahead)
 
-print("\n-------------------------------------------")
 print(f"Goal will be reached on: {predicted_goal_date.strftime('%B %d, %Y')}")
 print(f"Total days from today: {days_ahead}")
-print("-------------------------------------------")
+
+user_stats = df.groupby('NFC_UID')['Deposit_Amount'].agg(['sum', 'mean'])
+projections = user_stats['sum'] + (user_stats['mean'] * days_ahead)
+
+top_user_uid = projections.idxmax()
+print(f"Predicted Top Contributor: {top_user_uid}")
