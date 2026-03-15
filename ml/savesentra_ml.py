@@ -1,5 +1,7 @@
 import pandas as pd
 import datetime
+import sys
+import requests
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.svm import SVR
@@ -63,15 +65,13 @@ daily_df['Day_Of_Month'] = daily_df['Date'].dt.day
 selected_columns = ['Day_Of_Week', 'Is_Weekend', 'Month', 'Day_Of_Month', 'Deposit_Amount']
 ml_ready_data = daily_df[selected_columns]
 
-# saving this too just to keep track
 ml_ready_data.to_csv('ml_ready_data.csv', index=False)
 
 
 
 # MODEL TRAINING AND SHOOTOUT
 
-
-# Define Inputs (X) and Target (y) using the data we just engineered
+# Define Inputs (X) and Target (y)
 X = ml_ready_data[['Day_Of_Week', 'Is_Weekend', 'Month', 'Day_Of_Month']]
 y = ml_ready_data['Deposit_Amount']
 
@@ -113,8 +113,10 @@ print(f"Training final {winning_model_name} model on all data...")
 final_model = winning_model
 final_model.fit(X, y)
 
-# Setup the Simulation
-FAMILY_GOAL = 15000  # Change this target if needed
+if len(sys.argv) > 1:
+    FAMILY_GOAL = int(sys.argv[1])
+else:
+    FAMILY_GOAL = 15000  # Default value
 current_balance = df['Deposit_Amount'].sum()
 current_date = df['Timestamp'].max()
 
@@ -158,3 +160,13 @@ projections = user_stats['sum'] + (user_stats['mean'] * days_ahead)
 
 top_user_uid = projections.idxmax()
 print(f"Predicted Top Contributor: {top_user_uid}")
+
+# SEND PREDICTIONS TO BLYNK APP
+BLYNK_TOKEN = "jIf-JTtFAMlw41WrJvqtZalG0-WnrBXG"
+print("Pushing predictions to Blynk App via HTTP...")
+try:
+    requests.get(f"https://blynk.cloud/external/api/update?token={BLYNK_TOKEN}&pin=V16&value={predicted_goal_date.strftime('%b %d, %Y')}", timeout=5)
+    requests.get(f"https://blynk.cloud/external/api/update?token={BLYNK_TOKEN}&pin=V17&value={top_user_uid}", timeout=5)
+    print("Successfully sent to Blynk!")
+except Exception as e:
+    print(f"Failed to update Blynk: {e}")

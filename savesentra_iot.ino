@@ -39,23 +39,23 @@
 #include <Preferences.h>
 #include <Stepper.h>
 #include <HTTPClient.h>
-#include <time.h>
+#include <time.h> 
 
 char ssid[] = "Anthas Home";
 char pass[] = "althaf1109";
 
 // Raspberry Pi ML Server 
 const char* rpiServer = "http://raspberrypi.local:5000/deposit";
-bool nextNoteIs10 = true; // Alternates 10 -> 5 -> 10 -> 5
-bool authenticated = false;
-int authenticatedUserIndex = -1; // Keep track of WHO is logged in
-unsigned long authStartTime = 0;
-int selectedMenuIndex = -1; // Tracks which user is clicked in the V20 dropdown
 
-// --- NTP Time Setup ---
+bool authenticated = false;
+int authenticatedUserIndex = -1; // WHO is logged in
+unsigned long authStartTime = 0;
+int selectedMenuIndex = -1; // Tracks which user is clicked in the menu
+
+// NTP Time Setup 
 const char* ntpServer = "pool.ntp.org";
-const long  gmtOffset_sec = 14400; // UAE is UTC+4 (4 * 3600 = 14400)
-const int   daylightOffset_sec = 0; // No DST in UAE
+const long  gmtOffset_sec = 14400; 
+const int   daylightOffset_sec = 0; 
 
 #define SS_PIN 10
 #define RST_PIN 9
@@ -64,25 +64,25 @@ const int   daylightOffset_sec = 0; // No DST in UAE
 MFRC522 mfrc522(SS_PIN, RST_PIN);
 Preferences preferences;
 
-// --- Stepper Setup ---
+// Stepper Setup 
 const int stepsPerRevolution = 2048; 
 Stepper myStepper(stepsPerRevolution, IN1, IN3, IN2, IN4); 
 
-// --- Motor Logic Variables ---
+// Motor Logic Variables 
 unsigned long lastIrBlockTime = 0;
-const unsigned long motorStopDelay = 5000; // 5 seconds hysteresis
+const unsigned long motorStopDelay = 5000; 
 bool isMotorRunning = false;
 bool depositInProgress = false;
 long currentDepositSteps = 0; // Track Steps
-long billLengthSteps = 0; // Track actual bill length
+long billLengthSteps = 0; // Track actual bill length for denomination check
 
 int familyGoal = 1000; // Default goal
 
 struct User {
   String name;
   String uid;
-  float balance; // Track money
-  String role;   // User role: "Parent", "Child", "Other"
+  float balance; 
+  String role;   
 };
 
 User users[MAX_USERS];
@@ -91,12 +91,12 @@ int userCount = 0;
 bool registrationMode = false;
 String pendingName = "";
 
-// --- Memory Functions ---
+// Store the data inside ESP32 
 
 void loadUsers() {
   preferences.begin("users", true); 
   userCount = preferences.getInt("count", 0);
-  familyGoal = preferences.getInt("goal", 1000); // Load saved goal
+  familyGoal = preferences.getInt("goal", 1000); 
   for (int i = 0; i < userCount; i++) {
     users[i].name = preferences.getString(("name" + String(i)).c_str(), "");
     users[i].uid = preferences.getString(("uid" + String(i)).c_str(), "");
@@ -129,9 +129,9 @@ void saveUserBalance(int index) {
   Serial.println("Saved balance for " + users[index].name + ": " + String(users[index].balance));
 }
 
-// Function to wipe all data
+// Reset all the data
 void clearAllUsers() {
-  Serial.println("Wiping Database...");
+  Serial.println("Wiping Database");
   preferences.begin("users", false);
   preferences.clear(); 
   preferences.end();
@@ -144,9 +144,9 @@ void clearAllUsers() {
     users[i].role = "";
   }
   
-  Serial.println("System Reset: All users deleted.");
-  Blynk.virtualWrite(V1, "System Reset: All Users Deleted");
-  updateBlynkUserList(); // Clear the menu
+  Serial.println("All users deleted.");
+  Blynk.virtualWrite(V1, "All users deleted.");
+  updateBlynkUserList(); 
 }
 
 String getTimestamp() {
@@ -154,7 +154,7 @@ String getTimestamp() {
   if(!getLocalTime(&timeinfo)){
     return "00:00:00";
   }
-  char timeStringBuff[50]; //50 chars should be enough
+  char timeStringBuff[50]; 
   strftime(timeStringBuff, sizeof(timeStringBuff), "%Y-%m-%d %H:%M:%S", &timeinfo);
   return String(timeStringBuff);
 }
@@ -165,8 +165,7 @@ void updateBlynkUserList() {
         Blynk.setProperty(V20, "labels", "No Users Registered");
         return;
     }
-
-    // Blynk 2.0 Menu: pass individual items for reliable updates
+    // To select users in app menu
     Blynk.setProperty(V20, "labels", 
         (userCount > 0 ? users[0].name : ""), 
         (userCount > 1 ? users[1].name : ""), 
@@ -175,20 +174,18 @@ void updateBlynkUserList() {
         (userCount > 4 ? users[4].name : "")
     );
     
-    Serial.println("Blynk User List Refreshed with individual items.");
+    Serial.println("Blynk User List Refreshed.");
 }
 
-// --- Blynk Handlers ---
-
-// V12: Manual Logout Button (Parent Only)
+// logout button
 BLYNK_WRITE(V12) {
   if (param.asInt() == 1 && authenticated) {
-    Serial.println("Manual logout triggered via V12 button.");
+    Serial.println("Manual logout triggered via App.");
     performLogout();
   }
 }
 
-// V0: Input for Registration Name
+// name input
 BLYNK_WRITE(V0) {
   String inputName = param.asStr();
   inputName.trim();
@@ -207,12 +204,12 @@ BLYNK_WRITE(V0) {
   Serial.println("Registration Mode: Waiting for card for " + pendingName);
 }
 
-// V3: Button to Reset All Users
+// reset button
 BLYNK_WRITE(V3) {
   if (param.asInt() == 1) clearAllUsers();
 }
 
-// V20: Menu Dropdown - View selected user's balance
+// user selection
 BLYNK_WRITE(V20) {
   int selectedIndex = param.asInt();
   
@@ -220,17 +217,15 @@ BLYNK_WRITE(V20) {
     selectedMenuIndex = selectedIndex; // SAVE globally for V8 to delete
     Blynk.virtualWrite(V6, users[selectedIndex].balance);
     
-    // Display the Role alongside the Name
     String profileStatus = "Profile: " + users[selectedIndex].name + " (" + users[selectedIndex].role + ")";
     Blynk.virtualWrite(V1, profileStatus);
     
-    // Auto-update the V21 Role Dropdown to match the user's saved role
+    // Auto-update the V21 Role Dropdown
     int roleMenuIndex = 3; // Default to Other
     if (users[selectedIndex].role == "Parent") roleMenuIndex = 1;
     else if (users[selectedIndex].role == "Child") roleMenuIndex = 2;
     Blynk.virtualWrite(V21, roleMenuIndex);
     
-    // Update V11 contribution % for the selected user
     if (familyGoal > 0) {
       float goalPct = (users[selectedIndex].balance / (float)familyGoal) * 100.0;
       Blynk.virtualWrite(V11, goalPct);
@@ -238,56 +233,50 @@ BLYNK_WRITE(V20) {
       Blynk.virtualWrite(V11, 0.0);
     }
     
-    Serial.println("App selected: " + users[selectedIndex].name + " Role: " + users[selectedIndex].role);
+    Serial.println("App selected: " + users[selectedIndex].name);
   }
 }
 
-// V21: Assign Role to Selected User
+// role selection
 BLYNK_WRITE(V21) {
   if (selectedMenuIndex >= 0 && selectedMenuIndex < userCount) {
-    int roleSelection = param.asInt(); // 1 = Parent, 2 = Child, 3 = Other
+    int roleSelection = param.asInt(); 
 
     switch (roleSelection) {
       case 1: users[selectedMenuIndex].role = "Parent"; break;
       case 2: users[selectedMenuIndex].role = "Child"; break;
       case 3: users[selectedMenuIndex].role = "Other"; break;
-      default: return; // Ignore invalid
+      default: return; 
     }
 
-    // Save strictly the updated role to memory
     preferences.begin("users", false);
     preferences.putString(("role" + String(selectedMenuIndex)).c_str(), users[selectedMenuIndex].role);
     preferences.end();
     
-    // Immediately update V1 to show the new role
     String profileStatus = "Profile: " + users[selectedMenuIndex].name + " (" + users[selectedMenuIndex].role + ")";
     Blynk.virtualWrite(V1, profileStatus);
     
-    Serial.println("Role updated to: " + users[selectedMenuIndex].role + " for " + users[selectedMenuIndex].name);
+    Serial.println("Role updated to: " + users[selectedMenuIndex].role);
   } else {
     Blynk.virtualWrite(V1, "Select a user first!");
   }
 }
 
-// V8: Delete the specific user currently selected in the V20 Menu
+// delete particular user
 BLYNK_WRITE(V8) {
   if (param.asInt() == 1) {
-    int indexToDelete = selectedMenuIndex; // Grab the last selected dropdown index
+    int indexToDelete = selectedMenuIndex; 
 
     if (indexToDelete >= 0 && indexToDelete < userCount) {
       Serial.println("Deleting User: " + users[indexToDelete].name);
 
-      // 1. Shift all users after this one down by one spot in the array
       for (int i = indexToDelete; i < userCount - 1; i++) {
         users[i] = users[i + 1];
       }
-
-      // 2. Reduce the count
       userCount--;
 
-      // 3. Completely rewrite the Preferences memory to reflect the new list
       preferences.begin("users", false);
-      preferences.clear(); // Clear all old entries
+      preferences.clear(); 
       preferences.putInt("count", userCount);
       for (int i = 0; i < userCount; i++) {
         preferences.putString(("name" + String(i)).c_str(), users[i].name);
@@ -297,54 +286,48 @@ BLYNK_WRITE(V8) {
       }
       preferences.end();
 
-      // 4. Update the App UI
-      updateBlynkUserList(); // Refresh the V20 dropdown names
+      updateBlynkUserList(); 
       Blynk.virtualWrite(V1, "User Deleted Successfully");
-      Blynk.virtualWrite(V6, 0); // Reset balance display
+      Blynk.virtualWrite(V6, 0); 
       
-      // Recalculate and update total family savings
       float total = 0;
       for (int j = 0; j < userCount; j++) total += users[j].balance;
       Blynk.virtualWrite(V10, total);
       
-      // Fix sync issues if we deleted the person who was currently logged in via RFID
       if (authenticatedUserIndex == indexToDelete) authenticatedUserIndex = -1;
       else if (authenticatedUserIndex > indexToDelete) authenticatedUserIndex--; 
       
-      selectedMenuIndex = -1; // Reset selection
-      Serial.println("User list updated in memory.");
+      selectedMenuIndex = -1; 
+      Serial.println("User list updated.");
     } else {
       Blynk.virtualWrite(V1, "Error: No user selected");
     }
   }
 }
 
-// V7: Update Family Savings Goal
+// family goal setting
 BLYNK_WRITE(V7) {
   familyGoal = param.asInt();
   Serial.print("New Family Savings Goal: ");
   Serial.println(familyGoal);
 
-  // Save the new goal to flash so it survives reboots
   preferences.begin("users", false);
   preferences.putInt("goal", familyGoal);
   preferences.end();
   
-  // 1. Update the 'Max' property of the widgets
   Blynk.setProperty(V10, "max", familyGoal); 
   Blynk.setProperty(V6, "max", familyGoal);
 
-  // 2. Force the widgets to redraw by re-sending the current values
   float totalSavings = 0;
   for (int j = 0; j < userCount; j++) totalSavings += users[j].balance;
   
-  Blynk.virtualWrite(V10, totalSavings); // Re-send the family total
+  Blynk.virtualWrite(V10, totalSavings); 
   if (authenticatedUserIndex != -1) {
-    Blynk.virtualWrite(V6, users[authenticatedUserIndex].balance); // Re-send personal balance
+    Blynk.virtualWrite(V6, users[authenticatedUserIndex].balance); 
   }
   updateContributionStatus();
 
-  // --- NEW: Trigger Raspberry Pi to run ML prediction ---
+  // Send to Pi for ML prediction
   String rpiPredictUrl = String(rpiServer);
   rpiPredictUrl.replace("/deposit", "/predict");
   HTTPClient http;
@@ -355,15 +338,13 @@ BLYNK_WRITE(V7) {
   http.end();
 }
 
-// --- Helper Functions ---
+// contribution % calculation
 void updateContributionStatus() {
   int indexToCalculate = -1;
 
-  // Prioritize the user currently logged in via NFC
   if (authenticatedUserIndex != -1) {
     indexToCalculate = authenticatedUserIndex;
   } 
-  // Fallback: If an Admin is browsing the V20 menu with no one logged in
   else if (selectedMenuIndex != -1) {
     indexToCalculate = selectedMenuIndex;
   }
@@ -376,8 +357,9 @@ void updateContributionStatus() {
   }
 }
 
+// logout
 void performLogout() {
-  Serial.println("Logout: Session Ended");
+  Serial.println("Logging out...");
   Blynk.virtualWrite(V1, "Session Ended");
   
   // Hide Admin Tools
@@ -393,16 +375,15 @@ void performLogout() {
   depositInProgress = false;
   isMotorRunning = false;
   authenticatedUserIndex = -1;
-  updateContributionStatus(); // Reset V11 to 0.0
+  updateContributionStatus(); 
   digitalWrite(LED_BUILTIN, LOW);
 }
 
-// --- Main Setup & Loop ---
 
 void setup() {
   Serial.begin(115200);
   delay(1000); 
-  Serial.println("\n\n--- Booting SaveSentra (Motor Note Version) ---");
+  Serial.println("\n\nSaveSentra");
 
   pinMode(IR_SENSOR_PIN, INPUT);
   pinMode(LED_BUILTIN, OUTPUT);
@@ -410,33 +391,28 @@ void setup() {
 
   myStepper.setSpeed(10); 
 
-  // Connect to Blynk
   Serial.print("Connecting to WiFi: ");
   Serial.println(ssid);
   Blynk.begin(BLYNK_AUTH_TOKEN, ssid, pass);
   Serial.println("Blynk Connected!");
   
-  // Init and Get Time
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-  Serial.println("NTP Time Sync Requested.");
+  Serial.println("Time Sync requested.");
 
   SPI.begin();
   mfrc522.PCD_Init();
   mfrc522.PCD_DumpVersionToSerial(); 
-  Serial.println("NFC Reader Initialized");
+  Serial.println("NFC Ready");
 
   loadUsers();
 
-  Serial.println("--- System Ready ---");
   Blynk.virtualWrite(V1, "System Ready");
-  updateBlynkUserList(); // Populate menu on boot
+  updateBlynkUserList(); 
 
-  // Sync Blynk UI with loaded memory state
   Blynk.virtualWrite(V7, familyGoal);
   Blynk.setProperty(V10, "max", familyGoal);
   Blynk.setProperty(V6, "max", familyGoal);
   
-  // Hide Admin Widgets on Boot
   Blynk.setProperty(V0, "isHidden", true);
   Blynk.setProperty(V3, "isHidden", true);
   Blynk.setProperty(V7, "isHidden", true);
@@ -449,7 +425,7 @@ void setup() {
 void loop() {
   Blynk.run();
 
-  // 1. Check for RFID Card
+  // Check for RFID Card
   if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
     String uidString = "";
     for (byte i = 0; i < mfrc522.uid.size; i++) {
@@ -465,14 +441,14 @@ void loop() {
             Blynk.virtualWrite(V1, errorMsg);
             registrationMode = false;
             mfrc522.PICC_HaltA();
-            goto skip_rfid;
+            goto skip_rfid; 
         }
         }
 
         users[userCount].name = pendingName;
         users[userCount].uid = uidString;
-        users[userCount].balance = 0.0; // Init balance
-        users[userCount].role = "Other"; // Default role on fast registration
+        users[userCount].balance = 0.0; 
+        users[userCount].role = "Other"; 
         userCount++;
         saveUsers();
 
@@ -482,39 +458,35 @@ void loop() {
         Blynk.virtualWrite(V0, ""); 
         registrationMode = false;
         pendingName = "";
-        updateBlynkUserList(); // Update menu after new registration
+        updateBlynkUserList(); 
     } 
     else {
-        // --- Auth Logic ---
+        // Authentication
         bool found = false;
         for (int i = 0; i < userCount; i++) {
         if (users[i].uid == uidString) {
-            authenticatedUserIndex = i; // Save who logged in
+            authenticatedUserIndex = i; 
             String welcomeMsg = "Welcome " + users[i].name;
             Serial.println(welcomeMsg);
             
-            // Send welcome and current balance to App
             Blynk.virtualWrite(V1, welcomeMsg);
             Blynk.virtualWrite(V6, users[i].balance); 
 
-            // Update Total Family Savings on V10
             float totalSavings = 0;
             for (int j = 0; j < userCount; j++) totalSavings += users[j].balance;
             Blynk.virtualWrite(V10, totalSavings);
 
-            // Auto-select user in the V20 Dropdown Menu
             Blynk.virtualWrite(V20, i); 
-            selectedMenuIndex = i; // Keep our global variable in sync
+            selectedMenuIndex = i; 
             
-            // Auto-update the V21 Role Dropdown to match this user
-            int roleMenuIndex = 3; // Default to Other
+            int roleMenuIndex = 3; 
             if (users[i].role == "Parent") roleMenuIndex = 1;
             else if (users[i].role == "Child") roleMenuIndex = 2;
             Blynk.virtualWrite(V21, roleMenuIndex);
 
-            // --- ROLE-BASED UI VISIBILITY ---
+            // Show admin controls if it's a parent
             if (users[i].role == "Parent") {
-                Serial.println("Parent authenticated: Enabling Admin Tools");
+                Serial.println("Admin logged in. Unlocking tools.");
                 Blynk.setProperty(V0, "isHidden", false);
                 Blynk.setProperty(V3, "isHidden", false);
                 Blynk.setProperty(V7, "isHidden", false);
@@ -523,7 +495,7 @@ void loop() {
                 Blynk.setProperty(V21, "isHidden", false);
                 Blynk.setProperty(V30, "isHidden", false);
             } else {
-                Serial.println("Standard user authenticated: Admin Tools hidden");
+                Serial.println("Normal user. Admin tools stay hidden.");
                 Blynk.setProperty(V0, "isHidden", true);
                 Blynk.setProperty(V3, "isHidden", true);
                 Blynk.setProperty(V7, "isHidden", true);
@@ -537,16 +509,14 @@ void loop() {
             depositInProgress = false; 
             authStartTime = millis();
             
-            // --- NEW: Start motor immediately on Auth ---
+            // Start motor immediately on Auth
             isMotorRunning = true;
             lastIrBlockTime = millis(); 
-            // ------------------------------------------
             
-            // Reset steps for new session
             currentDepositSteps = 0;
             billLengthSteps = 0;
             Blynk.virtualWrite(V4, "0 Steps");
-            updateContributionStatus(); // INIT V11 VALUE
+            updateContributionStatus(); 
 
             found = true;
             break;
@@ -565,93 +535,103 @@ void loop() {
   
   skip_rfid:; 
 
-  // --- IR Monitoring & Motor Logic ---
+  // IR Monitoring & Motor Logic
   if (authenticated) {
 
     int currentIrState = digitalRead(IR_SENSOR_PIN);
     
-    // --- Motor Control (Hysteresis) & Auto-Logout ---
     if (currentIrState == LOW) {
         lastIrBlockTime = millis();
         isMotorRunning = true;
         depositInProgress = true;
         
         digitalWrite(LED_BUILTIN, HIGH); 
-        // V4 update is handled in the step logic so we can see steps
     } 
     else {
         digitalWrite(LED_BUILTIN, LOW);
         unsigned long timeSinceClear = millis() - lastIrBlockTime;
 
-        // 1. Motor Hysteresis
         if (timeSinceClear < motorStopDelay) {
             isMotorRunning = true;
         } else {
             isMotorRunning = false;
         }
 
-        // 2. Deposit Processing 
+        // Process the money 
         if (depositInProgress && timeSinceClear > (motorStopDelay + 3000)) {
-             // DEPOSIT LOGIC — alternates 10 AED and 5 AED
-             float depositAmount = nextNoteIs10 ? 10.0 : 5.0;
-
-             // Push Notification via Blynk Events
-             String notifyMsg = users[authenticatedUserIndex].name + " deposited " + String(depositAmount, 0) + " AED";
-             Blynk.logEvent("note_deposited", notifyMsg);
-
-             nextNoteIs10 = !nextNoteIs10; // Flip for next deposit
-             users[authenticatedUserIndex].balance += depositAmount; // Add to struct
              
-             // Save to memory
-             saveUserBalance(authenticatedUserIndex);
-
-             // Cloud Logging
-             String timestamp = getTimestamp();
-             String logMessage = timestamp + " | " + users[authenticatedUserIndex].name + " deposited " + String(depositAmount, 2) + " AED. Total: " + String(users[authenticatedUserIndex].balance, 2) + " AED. Length Steps: " + String(billLengthSteps);
-             Serial.println(logMessage);
+             Serial.print("Checking bill length... Steps recorded: ");
+             Serial.println(billLengthSteps);
              
-             Blynk.virtualWrite(V5, logMessage); // Terminal/Log string pin
-             Blynk.virtualWrite(V6, users[authenticatedUserIndex].balance); // Update balance display
+             float depositAmount = 0.0;
 
-             // Update Total Family Savings on V10
-             float totalSavings = 0;
-             for (int j = 0; j < userCount; j++) totalSavings += users[j].balance;
-             Blynk.virtualWrite(V10, totalSavings);
-             updateContributionStatus(); // Update V11
-
-             // --- Send deposit data to Raspberry Pi for ML ---
-             HTTPClient http;
-             http.begin(rpiServer);
-             http.addHeader("Content-Type", "application/x-www-form-urlencoded");
-             String csvPayload = "uid=" + users[authenticatedUserIndex].uid
-                               + "&name=" + users[authenticatedUserIndex].name
-                               + "&amount=" + String(depositAmount, 0)
-                               + "&balance=" + String(users[authenticatedUserIndex].balance, 0)
-                               + "&goal=" + String(familyGoal);
-             int httpCode = http.POST(csvPayload);
-             if (httpCode > 0) {
-                 Serial.println("RPi updated successfully");
-             } else {
-                 Serial.println("RPi update failed: " + String(httpCode));
+             // Figure out note based on step count
+             if (billLengthSteps >= 4990 && billLengthSteps <= 5080) {
+                 depositAmount = 5.0;
+                 Serial.println("5 AED note.");
+             } 
+             else if (billLengthSteps >= 5090 && billLengthSteps <= 5200) {
+                 depositAmount = 10.0;
+                 Serial.println("10 AED note.");
+             } 
+             else {
+                 Serial.println("Invalid note size.");
+                 Blynk.virtualWrite(V1, "Error: Unknown Note Size");
              }
-             http.end();
+             
+             if (depositAmount > 0.0) {
+                 String notifyMsg = users[authenticatedUserIndex].name + " deposited " + String(depositAmount, 0) + " AED";
+                 Blynk.logEvent("note_deposited", notifyMsg);
 
-             // Logout Sequence
+                 users[authenticatedUserIndex].balance += depositAmount; 
+                 saveUserBalance(authenticatedUserIndex);
+
+                 String timestamp = getTimestamp();
+                 String logMessage = timestamp + " | " + users[authenticatedUserIndex].name + " deposited " + String(depositAmount, 2) + " AED. Total: " + String(users[authenticatedUserIndex].balance, 2) + " AED. Length Steps: " + String(billLengthSteps);
+                 Serial.println(logMessage);
+                 
+                 Blynk.virtualWrite(V5, logMessage); 
+                 Blynk.virtualWrite(V6, users[authenticatedUserIndex].balance); 
+
+                 float totalSavings = 0;
+                 for (int j = 0; j < userCount; j++) totalSavings += users[j].balance;
+                 Blynk.virtualWrite(V10, totalSavings);
+                 updateContributionStatus(); 
+
+                 // Send to Pi for ML
+                 HTTPClient http;
+                 http.begin(rpiServer);
+                 http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+                 String csvPayload = "uid=" + users[authenticatedUserIndex].uid
+                                   + "&name=" + users[authenticatedUserIndex].name
+                                   + "&amount=" + String(depositAmount, 0)
+                                   + "&balance=" + String(users[authenticatedUserIndex].balance, 0)
+                                   + "&goal=" + String(familyGoal);
+                 int httpCode = http.POST(csvPayload);
+                 if (httpCode > 0) {
+                     Serial.println("Data Sent!");
+                 } else {
+                     Serial.println("Data Not Sent!");
+                 }
+                 http.end();
+             }
+
+             // Auto-logout
              performLogout();
         }
     }
 
-    // --- Execute Step (Non-blocking) ---
+    // Execute Step
     if (isMotorRunning) {
         myStepper.step(10); 
         currentDepositSteps += 10;
         
-        // ONLY count steps toward the bill length if the IR sensor is actively blocked
+        // Count steps toward the bill length if the IR sensor is actively blocked
         if (digitalRead(IR_SENSOR_PIN) == LOW) {
             billLengthSteps += 10; 
         }
         
-        // Update Blynk V4 every 100 steps to prevent flooding the server
+        // Update Blynk V4 every 100 steps 
         static long lastReportedSteps = -1;
         if (currentDepositSteps - lastReportedSteps >= 100) {
             Blynk.virtualWrite(V4, String(currentDepositSteps) + " Steps");
