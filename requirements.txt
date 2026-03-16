@@ -1,5 +1,0 @@
-pandas
-scikit-learn
-flask
-requests
-blynklib
