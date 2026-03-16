@@ -1,4 +1,4 @@
-# SaveSentra 🏦🤖
+<h1 align="center">SaveSentra</h1>
 
 **An IoT-based Family Cash Deposit System with Machine Learning Predictive Analytics.**
 
