@@ -1,6 +1,7 @@
 # SAVESENTRA IoT Family Cash Deposit System - Architecture Overview
 
 ## Executive Summary
+**Storage**: The Raspberry Pi server writes every deposit to a local SQLite database (`savesentra.db`) in addition to the CSV ledger.
 
 SAVESENTRA is an IoT-based family cash deposit system that digitizes physical cash savings. The system comprises three main layers:
 
